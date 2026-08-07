@@ -83,11 +83,16 @@
       ansible.builtin.debug:
         msg: "PIN PASSWORD rc={{ pin_password.rc }} :: {{ pin_password.stdout_lines | default([]) }}"
 
-    - name: Allow agent enrolment on 1515/tcp
+    - name: Report Wazuh component status
       ansible.builtin.command:
         cmd: /var/ossec/bin/wazuh-control status
       register: ossec_status
       changed_when: false
+      failed_when: false
+
+    - name: Show Wazuh component status
+      ansible.builtin.debug:
+        msg: "{{ ossec_status.stdout_lines }}"
 
     - name: Wait for the agent enrolment port to open
       ansible.builtin.wait_for:
