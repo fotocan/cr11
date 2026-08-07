@@ -1,0 +1,8 @@
+---
+# Staging server the encoded PowerShell payload "downloads" from.
+# Step 4 replaces this with an APG variable so it differs per trainee.
+staging_ip: 203.0.113.50
+
+# Where the fake Office binary is planted.
+office_dir: 'C:\Program Files\Microsoft Office\root\Office16'
+office_stub: 'C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE'
