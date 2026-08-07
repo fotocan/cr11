@@ -1,37 +1,83 @@
 ---
-- name: Linux reachability and egress check
-  hosts: linux-hosts:routers
+# Rung 1 — install the Wazuh all-in-one stack on the SIEM node.
+# Nothing scenario-specific yet: this only proves the SIEM installs and runs.
+
+- name: Install Wazuh all-in-one on the SIEM
+  hosts: linux-hosts
+  become: true
   gather_facts: true
   tasks:
-    - name: Ping Linux nodes
-      ansible.builtin.ping:
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name:
+          - curl
+          - gnupg
+          - apt-transport-https
+          - tar
+        state: present
+        update_cache: true
 
-    - name: Check internet egress from Linux
+    - name: Download the Wazuh installation assistant
+      ansible.builtin.get_url:
+        url: https://packages.wazuh.com/4.9/wazuh-install.sh
+        dest: /root/wazuh-install.sh
+        mode: "0750"
+
+    - name: Run the Wazuh installation assistant (slow — up to 20 minutes)
+      ansible.builtin.command:
+        cmd: /root/wazuh-install.sh -a -i
+        creates: /var/ossec/bin/wazuh-control
+      async: 2400
+      poll: 30
+
+    - name: Wait for the Wazuh dashboard to answer
       ansible.builtin.uri:
-        url: http://archive.ubuntu.com
-        method: HEAD
-        timeout: 15
-      register: lin_egress
-      ignore_errors: true
+        url: https://localhost:443
+        validate_certs: false
+        status_code: [200, 302, 401]
+      register: dashboard_up
+      retries: 30
+      delay: 20
+      until: dashboard_up is succeeded
 
-    - name: Report Linux egress result
+    - name: Read the generated credentials
+      ansible.builtin.shell:
+        cmd: >
+          tar -axf /root/wazuh-install-files.tar
+          -O wazuh-install-files/wazuh-passwords.txt
+      register: wazuh_creds
+      changed_when: false
+
+    - name: Show the generated credentials in the build log
       ansible.builtin.debug:
-        msg: "LINUX EGRESS: {{ 'OK' if lin_egress is succeeded else 'BLOCKED' }}"
+        var: wazuh_creds.stdout_lines
 
-- name: Windows reachability and egress check
+    - name: Report service states
+      ansible.builtin.command:
+        cmd: systemctl is-active wazuh-manager wazuh-indexer wazuh-dashboard
+      register: wazuh_services
+      changed_when: false
+      failed_when: false
+
+    - name: Show service states
+      ansible.builtin.debug:
+        msg: "WAZUH SERVICES: {{ wazuh_services.stdout_lines }}"
+
+- name: Confirm the Windows host is reachable
   hosts: windows-hosts
   gather_facts: true
   tasks:
-    - name: Ping Windows nodes
+    - name: Ping the Windows host
       ansible.windows.win_ping:
 
-    - name: Check internet egress from Windows
+    - name: Confirm the SIEM is reachable from the Windows host
       ansible.windows.win_uri:
-        url: http://www.msftconnecttest.com/connecttest.txt
-        method: HEAD
-      register: win_egress
+        url: https://10.0.0.3:443
+        validate_certs: false
+        status_code: [200, 302, 401]
+      register: ws_to_siem
       ignore_errors: true
 
-    - name: Report Windows egress result
+    - name: Report WS to SIEM connectivity
       ansible.builtin.debug:
-        msg: "WINDOWS EGRESS: {{ 'OK' if win_egress is succeeded else 'BLOCKED' }}"
+        msg: "WS -> SIEM: {{ 'OK' if ws_to_siem is succeeded else 'BLOCKED' }}"
