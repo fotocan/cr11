@@ -195,6 +195,12 @@
       ansible.builtin.pause:
         seconds: 30
 
+- name: Workstation — stage the B1 artefact
+  hosts: windows-hosts
+  gather_facts: false
+  roles:
+    - ws-artifacts
+
 - name: Confirm the agent enrolled
   hosts: linux-hosts
   become: true
