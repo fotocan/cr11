@@ -1,8 +1,13 @@
-- name: user-access
-  src: https://github.com/cyberrangecz/ansible-role-user-access
-  scm: git
-  version: v1.0.0
-- name: sandbox-logging
-  src: https://github.com/cyberrangecz/ansible-role-sandbox-logging
-  scm: git
-  version: v1.0.0
+collections:
+  - name: ansible.windows
+    source: https://galaxy.ansible.com
+    version: 3.5.0
+roles:
+  - name: ansible-role-user-access-windows
+    src: https://github.com/andpara/ansible-role-user-access-windows
+    scm: git
+    version: v1.0.0
+  - name: ansible-role-user-access
+    src: https://github.com/cyberrangecz/ansible-role-user-access
+    scm: git
+    version: v1.0.0
