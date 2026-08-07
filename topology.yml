@@ -12,7 +12,7 @@ hosts:
     base_box:
       image: windows-11-x86_64
       mgmt_user: windows
-      mgmt_protocol: wirm
+      mgmt_protocol: winrm
     hidden: false
 routers:
   - name: proba-router
