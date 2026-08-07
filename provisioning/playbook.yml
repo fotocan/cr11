@@ -1,6 +1,6 @@
 ---
-# CADMUS-CR-11 — rung 1
-# Wazuh all-in-one on the SIEM, plus trainee access to both hosts.
+# CADMUS-CR-11 — step 2
+# Wazuh all-in-one on the SIEM, Sysmon + Wazuh agent on the workstation.
 
 - name: Wait until WinRM is reachable on every Windows host
   hosts: windows-hosts
@@ -30,7 +30,8 @@
   gather_facts: true
   vars:
     local_trainee_password: Password123!
-    wazuh_admin_password: Analyst123!
+    # Wazuh only accepts the symbols . * + ? -   ("!" is rejected)
+    wazuh_admin_password: Analyst123.
   roles:
     - name: ansible-role-user-access
       user_access_username: localadmin
@@ -52,7 +53,7 @@
         dest: /root/wazuh-install.sh
         mode: "0750"
 
-    - name: Run the Wazuh installation assistant (slow — around 16 minutes)
+    - name: Run the Wazuh installation assistant (slow — around 17 minutes)
       ansible.builtin.command:
         cmd: /root/wazuh-install.sh -a -i
         creates: /var/ossec/bin/wazuh-control
@@ -69,33 +70,30 @@
       delay: 20
       until: dashboard_up is succeeded
 
-    - name: Locate the Wazuh password tool
-      ansible.builtin.find:
-        paths:
-          - /usr/share/wazuh-indexer
-          - /var/ossec
-        patterns: "wazuh-passwords-tool.sh"
-        recurse: true
-      register: pw_tool
-
-    - name: Report where the password tool lives
-      ansible.builtin.debug:
-        msg: "PASSWORD TOOL: {{ pw_tool.files | map(attribute='path') | list }}"
-
     - name: Pin the dashboard admin password to a known value
       ansible.builtin.command:
-        cmd: "{{ (pw_tool.files | first).path }} -u admin -p {{ wazuh_admin_password }}"
+        cmd: >
+          /usr/share/wazuh-indexer/plugins/opensearch-security/tools/wazuh-passwords-tool.sh
+          -u admin -p {{ wazuh_admin_password }}
       register: pin_password
       changed_when: pin_password.rc == 0
       failed_when: false
-      when: pw_tool.files | length > 0
 
     - name: Report the password pinning result
       ansible.builtin.debug:
-        msg: >-
-          PIN PASSWORD rc={{ pin_password.rc | default('skipped') }} ::
-          {{ pin_password.stdout_lines | default([]) }} ::
-          {{ pin_password.stderr_lines | default([]) }}
+        msg: "PIN PASSWORD rc={{ pin_password.rc }} :: {{ pin_password.stdout_lines | default([]) }}"
+
+    - name: Allow agent enrolment on 1515/tcp
+      ansible.builtin.command:
+        cmd: /var/ossec/bin/wazuh-control status
+      register: ossec_status
+      changed_when: false
+
+    - name: Wait for the agent enrolment port to open
+      ansible.builtin.wait_for:
+        port: 1515
+        host: 0.0.0.0
+        timeout: 300
 
     - name: Report service states
       ansible.builtin.command:
@@ -108,18 +106,105 @@
       ansible.builtin.debug:
         msg: "WAZUH SERVICES: {{ wazuh_services.stdout_lines }}"
 
-- name: Confirm the Windows host can reach the SIEM
+- name: Workstation — Sysmon and the Wazuh agent
   hosts: windows-hosts
   gather_facts: false
+  vars:
+    siem_ip: 10.0.0.3
+    sysmon_dir: C:\Installs\Sysmon
+    wazuh_agent_url: https://packages.wazuh.com/4.x/windows/wazuh-agent-4.9.2-1.msi
   tasks:
-    - name: Request the dashboard login page from the Windows host
-      ansible.windows.win_uri:
-        url: https://10.0.0.3:443
-        validate_certs: false
-        status_code: [200, 302, 401]
-      register: ws_to_siem
-      ignore_errors: true
 
-    - name: Report WS to SIEM connectivity
+    # ------------------------------------------------------------------
+    # Sysmon — endpoint telemetry (process creation, network connections)
+    # ------------------------------------------------------------------
+    - name: Ensure the Sysmon install directory exists
+      ansible.windows.win_file:
+        path: '{{ sysmon_dir }}'
+        state: directory
+
+    - name: Download Sysmon from Sysinternals
+      ansible.windows.win_get_url:
+        url: https://download.sysinternals.com/files/Sysmon.zip
+        dest: '{{ sysmon_dir }}\Sysmon.zip'
+
+    - name: Unzip Sysmon
+      community.windows.win_unzip:
+        src: '{{ sysmon_dir }}\Sysmon.zip'
+        dest: '{{ sysmon_dir }}'
+
+    - name: Download the SwiftOnSecurity Sysmon configuration
+      ansible.windows.win_get_url:
+        url: https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml
+        dest: '{{ sysmon_dir }}\sysmonconfig.xml'
+
+    - name: Install Sysmon with that configuration
+      ansible.windows.win_command:
+        cmd: '{{ sysmon_dir }}\Sysmon64.exe -accepteula -i {{ sysmon_dir }}\sysmonconfig.xml'
+      args:
+        creates: C:\Windows\Sysmon64.exe
+      register: sysmon_install
+      failed_when: false
+
+    - name: Report the Sysmon install result
       ansible.builtin.debug:
-        msg: "WS -> SIEM: {{ 'OK' if ws_to_siem is succeeded else 'BLOCKED' }}"
+        msg: "SYSMON INSTALL rc={{ sysmon_install.rc | default('n/a') }} :: {{ sysmon_install.stdout_lines | default([]) }}"
+
+    - name: Confirm the Sysmon service is running
+      ansible.windows.win_service:
+        name: Sysmon64
+        state: started
+        start_mode: auto
+
+    # ------------------------------------------------------------------
+    # Wazuh agent — ships Windows and Sysmon events to the manager
+    # ------------------------------------------------------------------
+    - name: Download the Wazuh agent installer
+      ansible.windows.win_get_url:
+        url: '{{ wazuh_agent_url }}'
+        dest: C:\Installs\wazuh-agent.msi
+
+    - name: Install and enrol the Wazuh agent
+      ansible.windows.win_package:
+        path: C:\Installs\wazuh-agent.msi
+        arguments: /q WAZUH_MANAGER="{{ siem_ip }}" WAZUH_AGENT_NAME="WS01" WAZUH_REGISTRATION_SERVER="{{ siem_ip }}"
+        state: present
+
+    - name: Add the Sysmon channel to the agent configuration
+      community.windows.win_lineinfile:
+        path: C:\Program Files (x86)\ossec-agent\ossec.conf
+        insertbefore: '</ossec_config>'
+        line: |
+          <localfile>
+            <location>Microsoft-Windows-Sysmon/Operational</location>
+            <log_format>eventchannel</log_format>
+          </localfile>
+
+    - name: Restart the Wazuh agent so it picks up the Sysmon channel
+      ansible.windows.win_service:
+        name: WazuhSvc
+        state: restarted
+        start_mode: auto
+
+    - name: Give the agent a moment to enrol
+      ansible.builtin.pause:
+        seconds: 30
+
+- name: Confirm the agent enrolled
+  hosts: linux-hosts
+  become: true
+  gather_facts: false
+  tasks:
+    - name: List enrolled agents
+      ansible.builtin.command:
+        cmd: /var/ossec/bin/agent_control -l
+      register: agent_list
+      changed_when: false
+      failed_when: false
+      retries: 10
+      delay: 15
+      until: "'WS01' in agent_list.stdout"
+
+    - name: Show enrolled agents
+      ansible.builtin.debug:
+        msg: "AGENTS: {{ agent_list.stdout_lines }}"
