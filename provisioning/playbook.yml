@@ -1,11 +1,34 @@
 ---
-# Rung 1 — install the Wazuh all-in-one stack on the SIEM node.
-# Nothing scenario-specific yet: this only proves the SIEM installs and runs.
+# Rung 1 — Wazuh all-in-one on the SIEM, plus trainee access to the Windows host.
+
+- name: Wait until WinRM is reachable on every Windows host
+  hosts: windows-hosts
+  gather_facts: false
+  tasks:
+    - name: Wait for the WinRM listener to accept connections
+      ansible.builtin.wait_for_connection:
+        delay: 0
+        sleep: 10
+        timeout: 900
+
+- name: Windows workstation — trainee access and RDP
+  hosts: windows-hosts
+  gather_facts: false
+  vars:
+    local_trainee_password: Password123!
+  roles:
+    - name: ansible-role-user-access-windows
+      user_access_username: localadmin
+      user_access_password: '{{ local_trainee_password }}'
+      user_access_rdp: true
+      user_access_admin: true
 
 - name: Install Wazuh all-in-one on the SIEM
   hosts: linux-hosts
   become: true
   gather_facts: true
+  vars:
+    wazuh_admin_password: Analyst123!
   tasks:
     - name: Install prerequisites
       ansible.builtin.apt:
@@ -23,7 +46,7 @@
         dest: /root/wazuh-install.sh
         mode: "0750"
 
-    - name: Run the Wazuh installation assistant (slow — up to 20 minutes)
+    - name: Run the Wazuh installation assistant (slow — around 16 minutes)
       ansible.builtin.command:
         cmd: /root/wazuh-install.sh -a -i
         creates: /var/ossec/bin/wazuh-control
@@ -40,17 +63,18 @@
       delay: 20
       until: dashboard_up is succeeded
 
-    - name: Read the generated credentials
-      ansible.builtin.shell:
+    - name: Pin the dashboard admin password to a known value
+      ansible.builtin.command:
         cmd: >
-          tar -axf /root/wazuh-install-files.tar
-          -O wazuh-install-files/wazuh-passwords.txt
-      register: wazuh_creds
-      changed_when: false
+          /usr/share/wazuh-indexer/plugins/opensearch-security/tools/wazuh-passwords-tool.sh
+          -u admin -p {{ wazuh_admin_password }}
+      register: pin_password
+      changed_when: pin_password.rc == 0
+      failed_when: false
 
-    - name: Show the generated credentials in the build log
+    - name: Report the password pinning result
       ansible.builtin.debug:
-        var: wazuh_creds.stdout_lines
+        msg: "PIN PASSWORD rc={{ pin_password.rc }} :: {{ pin_password.stdout_lines | default([]) }} :: {{ pin_password.stderr_lines | default([]) }}"
 
     - name: Report service states
       ansible.builtin.command:
@@ -63,14 +87,11 @@
       ansible.builtin.debug:
         msg: "WAZUH SERVICES: {{ wazuh_services.stdout_lines }}"
 
-- name: Confirm the Windows host is reachable
+- name: Confirm the Windows host can reach the SIEM
   hosts: windows-hosts
-  gather_facts: true
+  gather_facts: false
   tasks:
-    - name: Ping the Windows host
-      ansible.windows.win_ping:
-
-    - name: Confirm the SIEM is reachable from the Windows host
+    - name: Request the dashboard login page from the Windows host
       ansible.windows.win_uri:
         url: https://10.0.0.3:443
         validate_certs: false
