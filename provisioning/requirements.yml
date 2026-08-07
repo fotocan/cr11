@@ -6,11 +6,3 @@
   src: https://github.com/cyberrangecz/ansible-role-sandbox-logging
   scm: git
   version: v1.0.0
-- name: chrony
-  src: https://github.com/cyberrangecz/ansible-role-chrony
-  scm: git
-  version: v1.0.0
-- name: hosts-aliases
-  src: https://github.com/cyberrangecz/ansible-role-hosts-aliases
-  scm: git
-  version: v1.0.0
