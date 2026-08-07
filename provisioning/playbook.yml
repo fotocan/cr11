@@ -1,0 +1,39 @@
+---
+- name: Linux reachability and egress check
+  hosts: ssh_nodes
+  gather_facts: true
+  tasks:
+    - name: Ping Linux nodes
+      ansible.builtin.ping:
+
+    - name: Check internet egress from Linux
+      ansible.builtin.uri:
+        url: http://archive.ubuntu.com
+        method: HEAD
+        timeout: 15
+      register: lin_egress
+      ignore_errors: true
+
+    - name: Report Linux egress result
+      ansible.builtin.debug:
+        msg: "LINUX EGRESS: {{ 'OK' if lin_egress is succeeded else 'BLOCKED' }}"
+
+- name: Windows reachability and egress check
+  hosts: winrm_nodes
+  gather_facts: true
+  ignore_unreachable: true
+  tasks:
+    - name: Ping Windows nodes
+      ansible.windows.win_ping:
+      ignore_errors: true
+
+    - name: Check internet egress from Windows
+      ansible.windows.win_uri:
+        url: http://www.msftconnecttest.com/connecttest.txt
+        method: HEAD
+      register: win_egress
+      ignore_errors: true
+
+    - name: Report Windows egress result
+      ansible.builtin.debug:
+        msg: "WINDOWS EGRESS: {{ 'OK' if win_egress is succeeded else 'BLOCKED' }}"
