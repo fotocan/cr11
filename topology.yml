@@ -8,15 +8,14 @@ hosts:
       mgmt_protocol: ssh
     hidden: false
   - name: proba-win
-    flavor: c2_r4_d40
+    flavor: c4_r5_d50
     base_box:
       image: windows-11-x86_64
       mgmt_user: windows
-      mgmt_protocol: winrm
     hidden: false
 routers:
   - name: proba-router
-    flavor: standard.small
+    flavor: c1_r2_d10
     base_box:
       image: debian-12-x86_64
       mgmt_user: debian
@@ -24,20 +23,27 @@ routers:
     hidden: false
 networks:
   - name: proba-net
-    cidr: 10.10.20.0/24
+    cidr: 10.0.0.0/24
     accessible_by_user: true
     hidden: false
 wan:
-  name: wan
+  name: internet-connection
   cidr: 100.100.100.0/24
 net_mappings:
   - host: proba-lin
     network: proba-net
-    ip: 10.10.20.10
+    ip: 10.0.0.3
   - host: proba-win
     network: proba-net
-    ip: 10.10.20.11
+    ip: 10.0.0.4
 router_mappings:
   - router: proba-router
     network: proba-net
-    ip: 10.10.20.1
+    ip: 10.0.0.1
+groups:
+  - name: linux-hosts
+    nodes:
+      - proba-lin
+  - name: windows-hosts
+    nodes:
+      - proba-win
