@@ -1,6 +1,6 @@
 ---
 - name: Linux reachability and egress check
-  hosts: ssh_nodes
+  hosts: linux-hosts:routers
   gather_facts: true
   tasks:
     - name: Ping Linux nodes
@@ -19,13 +19,11 @@
         msg: "LINUX EGRESS: {{ 'OK' if lin_egress is succeeded else 'BLOCKED' }}"
 
 - name: Windows reachability and egress check
-  hosts: winrm_nodes
+  hosts: windows-hosts
   gather_facts: true
-  ignore_unreachable: true
   tasks:
     - name: Ping Windows nodes
       ansible.windows.win_ping:
-      ignore_errors: true
 
     - name: Check internet egress from Windows
       ansible.windows.win_uri:
