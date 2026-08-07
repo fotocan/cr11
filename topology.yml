@@ -1,20 +1,20 @@
-name: proba-sandbox
+name: cr11-b1
 hosts:
-  - name: proba-lin
-    flavor: standard.small
+  - name: siem
+    flavor: c4_r16_d80
     base_box:
       image: ubuntu-noble-x86_64
       mgmt_user: ubuntu
       mgmt_protocol: ssh
     hidden: false
-  - name: proba-win
+  - name: ws
     flavor: c4_r5_d50
     base_box:
       image: windows-11-x86_64
       mgmt_user: windows
     hidden: false
 routers:
-  - name: proba-router
+  - name: r-corp
     flavor: c1_r2_d10
     base_box:
       image: debian-12-x86_64
@@ -22,7 +22,7 @@ routers:
       mgmt_protocol: ssh
     hidden: false
 networks:
-  - name: proba-net
+  - name: corp
     cidr: 10.0.0.0/24
     accessible_by_user: true
     hidden: false
@@ -30,20 +30,20 @@ wan:
   name: internet-connection
   cidr: 100.100.100.0/24
 net_mappings:
-  - host: proba-lin
-    network: proba-net
+  - host: siem
+    network: corp
     ip: 10.0.0.3
-  - host: proba-win
-    network: proba-net
+  - host: ws
+    network: corp
     ip: 10.0.0.4
 router_mappings:
-  - router: proba-router
-    network: proba-net
+  - router: r-corp
+    network: corp
     ip: 10.0.0.1
 groups:
   - name: linux-hosts
     nodes:
-      - proba-lin
+      - siem
   - name: windows-hosts
     nodes:
-      - proba-win
+      - ws
