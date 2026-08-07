@@ -1,0 +1,43 @@
+name: proba-sandbox
+hosts:
+  - name: proba-lin
+    flavor: standard.small
+    base_box:
+      image: ubuntu-noble-x86_64
+      mgmt_user: ubuntu
+      mgmt_protocol: ssh
+    hidden: false
+  - name: proba-win
+    flavor: c2_r4_d40
+    base_box:
+      image: windows-11-x86_64
+      mgmt_user: windows
+      mgmt_protocol: wirm
+    hidden: false
+routers:
+  - name: proba-router
+    flavor: standard.small
+    base_box:
+      image: debian-12-x86_64
+      mgmt_user: debian
+      mgmt_protocol: ssh
+    hidden: false
+networks:
+  - name: proba-net
+    cidr: 10.10.20.0/24
+    accessible_by_user: true
+    hidden: false
+wan:
+  name: wan
+  cidr: 100.100.100.0/24
+net_mappings:
+  - host: proba-lin
+    network: proba-net
+    ip: 10.10.20.10
+  - host: proba-win
+    network: proba-net
+    ip: 10.10.20.11
+router_mappings:
+  - router: proba-router
+    network: proba-net
+    ip: 10.10.20.1
