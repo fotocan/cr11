@@ -1,0 +1,488 @@
+---
+# CADMUS-CR-11
+# siem: Wazuh all-in-one.  dc: Active Directory.  ws: compromised endpoint.
+
+- name: Pre-flight — is the microsoft.ad collection available?
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Look for microsoft.ad
+      ansible.builtin.command:
+        cmd: ansible-galaxy collection list microsoft.ad
+      register: ad_collection
+      changed_when: false
+      failed_when: false
+
+    - name: Report whether microsoft.ad is present
+      ansible.builtin.debug:
+        msg: >-
+          MICROSOFT.AD: {{ 'PRESENT' if ad_collection.rc == 0 else 'MISSING — domain promotion will fail' }}
+          :: {{ ad_collection.stdout_lines | default([]) }}
+
+- name: Wait until WinRM is reachable on every Windows host
+  hosts: windows-hosts
+  gather_facts: false
+  tasks:
+    - name: Wait for the WinRM listener to accept connections
+      ansible.builtin.wait_for_connection:
+        delay: 0
+        sleep: 10
+        timeout: 900
+
+- name: Windows workstation — trainee access and RDP
+  hosts: windows-hosts
+  gather_facts: false
+  vars:
+    local_trainee_password: Password123!
+  roles:
+    - name: ansible-role-user-access-windows
+      user_access_username: localadmin
+      user_access_password: '{{ local_trainee_password }}'
+      user_access_rdp: true
+      user_access_admin: true
+
+- name: Workstation — set the computer name to WS01
+  hosts: windows-members
+  gather_facts: false
+  tasks:
+    - name: Set the computer name to WS01
+      ansible.windows.win_hostname:
+        name: WS01
+      register: ws_rename
+
+    - name: Reboot if the computer was renamed
+      ansible.windows.win_reboot:
+        reboot_timeout: 900
+      when: ws_rename.reboot_required
+
+- name: Domain controller — promote dc to a domain controller
+  hosts: domain-controllers
+  gather_facts: false
+  vars:
+    ad_domain_name: corp.local
+    ad_admin_password: Password123!
+    employee_password: Password123!
+    service_password: Password123!
+  tasks:
+    - name: Set the computer name to DC01
+      ansible.windows.win_hostname:
+        name: DC01
+      register: dc_rename
+
+    - name: Reboot if the computer was renamed
+      ansible.windows.win_reboot:
+        reboot_timeout: 900
+      when: dc_rename.reboot_required
+
+    - name: Install the AD DS role
+      ansible.windows.win_feature:
+        name: AD-Domain-Services
+        include_management_tools: true
+        state: present
+      register: ad_feature
+
+    - name: Detect whether the host is already a domain controller
+      ansible.windows.win_shell: (Get-CimInstance Win32_ComputerSystem).DomainRole
+      register: dc_role
+      changed_when: false
+
+    - name: Set a password on the built-in Administrator account
+      ansible.windows.win_user:
+        name: Administrator
+        password: '{{ ad_admin_password }}'
+        password_never_expires: true
+        state: present
+      when: (dc_role.stdout | trim | int) < 4
+
+    - name: Promote to domain controller (reboots)
+      microsoft.ad.domain:
+        dns_domain_name: '{{ ad_domain_name }}'
+        safe_mode_password: '{{ ad_admin_password }}'
+        reboot: true
+      when: ad_feature is succeeded
+
+    - name: Wait for AD DS to answer on LDAP after the reboot
+      ansible.windows.win_wait_for:
+        host: 127.0.0.1
+        port: 389
+        delay: 30
+        timeout: 900
+
+    - name: Confirm the domain role
+      ansible.windows.win_shell: >-
+        "$((Get-CimInstance Win32_ComputerSystem).DomainRole) $((Get-CimInstance Win32_ComputerSystem).Domain)"
+      register: dc_final
+      changed_when: false
+
+    - name: Report the domain state
+      ansible.builtin.debug:
+        msg: "DOMAIN: {{ dc_final.stdout | trim }} (role 4 or 5 means domain controller)"
+
+    # ------------------------------------------------------------------
+    # Scenario accounts.
+    #   j.novak   — the employee who opens the malicious attachment
+    #   svc-backup — the service account the attacker compromises and uses
+    #                for lateral movement (C2) and that E1 must disable
+    # ------------------------------------------------------------------
+    - name: Ensure the Employees OU exists
+      microsoft.ad.ou:
+        name: Employees
+        path: DC=corp,DC=local
+        state: present
+
+    - name: Ensure the ServiceAccounts OU exists
+      microsoft.ad.ou:
+        name: ServiceAccounts
+        path: DC=corp,DC=local
+        state: present
+
+    - name: Create the employee account
+      microsoft.ad.user:
+        name: j.novak
+        sam_account_name: j.novak
+        upn: j.novak@corp.local
+        firstname: Jan
+        surname: Novak
+        path: OU=Employees,DC=corp,DC=local
+        password: '{{ employee_password }}'
+        password_never_expires: true
+        enabled: true
+        state: present
+
+    - name: Create the backup service account
+      microsoft.ad.user:
+        name: svc-backup
+        sam_account_name: svc-backup
+        upn: svc-backup@corp.local
+        description: Nightly backup job — do not disable without change approval
+        path: OU=ServiceAccounts,DC=corp,DC=local
+        password: '{{ service_password }}'
+        password_never_expires: true
+        enabled: true
+        state: present
+        groups:
+          add:
+            - Backup Operators
+
+    - name: List the scenario accounts
+      ansible.windows.win_shell: >-
+        Get-ADUser -Filter * -Properties Enabled |
+        Select-Object SamAccountName,Enabled |
+        Format-Table -AutoSize | Out-String
+      register: ad_users
+      changed_when: false
+
+    - name: Report the scenario accounts
+      ansible.builtin.debug:
+        msg: "AD USERS: {{ ad_users.stdout_lines | select | list }}"
+
+- name: Workstation — join WS01 to the domain
+  hosts: windows-members
+  gather_facts: false
+  vars:
+    ad_domain_name: corp.local
+    ad_dc_ip: 10.0.0.5
+    ad_admin_password: Password123!
+  tasks:
+    - name: Point DNS at the domain controller
+      ansible.windows.win_dns_client:
+        adapter_names: '*'
+        dns_servers:
+          - '{{ ad_dc_ip }}'
+          - 1.1.1.1
+
+    - name: Join the host to the domain (reboots)
+      microsoft.ad.membership:
+        dns_domain_name: '{{ ad_domain_name }}'
+        domain_admin_user: Administrator@{{ ad_domain_name }}
+        domain_admin_password: '{{ ad_admin_password }}'
+        state: domain
+        reboot: true
+
+    - name: Confirm domain membership
+      ansible.windows.win_shell: >-
+        "$((Get-CimInstance Win32_ComputerSystem).PartOfDomain) $((Get-CimInstance Win32_ComputerSystem).Domain)"
+      register: ws_domain
+      changed_when: false
+
+    - name: Report domain membership
+      ansible.builtin.debug:
+        msg: "WS01 DOMAIN: {{ ws_domain.stdout | trim }}"
+
+    - name: Confirm the host can still reach the internet after the DNS change
+      ansible.windows.win_uri:
+        url: http://www.msftconnecttest.com/connecttest.txt
+        method: HEAD
+      register: ws_egress
+      ignore_errors: true
+
+    - name: Report egress after the DNS change
+      ansible.builtin.debug:
+        msg: "WS01 EGRESS: {{ 'OK' if ws_egress is succeeded else 'BLOCKED' }}"
+
+    # The domain join removes localadmin's implicit RDP right, so grant it
+    # explicitly — trainees reach WS01 through Open GUI and nothing else.
+    - name: Ensure localadmin can sign in over RDP after the domain join
+      ansible.windows.win_group_membership:
+        name: Remote Desktop Users
+        members:
+          - localadmin
+        state: present
+
+- name: SIEM — trainee access and Wazuh all-in-one
+  hosts: linux-hosts
+  become: true
+  gather_facts: true
+  vars:
+    local_trainee_password: Password123!
+    # Wazuh only accepts the symbols . * + ? -   ("!" is rejected)
+    wazuh_admin_password: Analyst123.
+  roles:
+    - name: ansible-role-user-access
+      user_access_username: localadmin
+      user_access_password: '{{ local_trainee_password }}'
+  tasks:
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name:
+          - curl
+          - gnupg
+          - apt-transport-https
+          - tar
+        state: present
+        update_cache: true
+
+    - name: Download the Wazuh installation assistant
+      ansible.builtin.get_url:
+        url: https://packages.wazuh.com/4.9/wazuh-install.sh
+        dest: /root/wazuh-install.sh
+        mode: "0750"
+
+    - name: Run the Wazuh installation assistant (slow — around 17 minutes)
+      ansible.builtin.command:
+        cmd: /root/wazuh-install.sh -a -i
+        creates: /var/ossec/bin/wazuh-control
+      async: 2400
+      poll: 30
+
+    - name: Wait for the Wazuh dashboard to answer
+      ansible.builtin.uri:
+        url: https://localhost:443
+        validate_certs: false
+        status_code: [200, 302, 401]
+      register: dashboard_up
+      retries: 30
+      delay: 20
+      until: dashboard_up is succeeded
+
+    - name: Pin the dashboard admin password to a known value
+      ansible.builtin.command:
+        cmd: >
+          /usr/share/wazuh-indexer/plugins/opensearch-security/tools/wazuh-passwords-tool.sh
+          -u admin -p {{ wazuh_admin_password }}
+      register: pin_password
+      changed_when: pin_password.rc == 0
+      failed_when: false
+
+    - name: Report the password pinning result
+      ansible.builtin.debug:
+        msg: "PIN PASSWORD rc={{ pin_password.rc }} :: {{ pin_password.stdout_lines | default([]) }}"
+
+    - name: Report Wazuh component status
+      ansible.builtin.command:
+        cmd: /var/ossec/bin/wazuh-control status
+      register: ossec_status
+      changed_when: false
+      failed_when: false
+
+    - name: Show Wazuh component status
+      ansible.builtin.debug:
+        msg: "{{ ossec_status.stdout_lines }}"
+
+    - name: Wait for the agent enrolment port to open
+      ansible.builtin.wait_for:
+        port: 1515
+        host: 0.0.0.0
+        timeout: 300
+
+    - name: Cap the indexer JVM heap so the stack fits in 8 GB
+      ansible.builtin.replace:
+        path: /etc/wazuh-indexer/jvm.options
+        regexp: '^-X{{ item }}\\d+[gm]'
+        replace: '-X{{ item }}3g'
+      loop:
+        - ms
+        - mx
+      register: heap_capped
+
+    - name: Restart the indexer if the heap changed
+      ansible.builtin.systemd:
+        name: wazuh-indexer
+        state: restarted
+      when: heap_capped is changed
+
+    - name: Wait for the dashboard again after the indexer restart
+      ansible.builtin.uri:
+        url: https://localhost:443
+        validate_certs: false
+        status_code: [200, 302, 401]
+      register: dashboard_back
+      retries: 30
+      delay: 20
+      until: dashboard_back is succeeded
+      when: heap_capped is changed
+
+    - name: Report memory headroom
+      ansible.builtin.command: free -m
+      register: mem_free
+      changed_when: false
+
+    - name: Show memory headroom
+      ansible.builtin.debug:
+        msg: "MEMORY: {{ mem_free.stdout_lines }}"
+
+    - name: Report service states
+      ansible.builtin.command:
+        cmd: systemctl is-active wazuh-manager wazuh-indexer wazuh-dashboard
+      register: wazuh_services
+      changed_when: false
+      failed_when: false
+
+    - name: Show service states
+      ansible.builtin.debug:
+        msg: "WAZUH SERVICES: {{ wazuh_services.stdout_lines }}"
+
+  post_tasks:
+    - name: Install the CR-11 detection rules
+      ansible.builtin.include_role:
+        name: siem-rules
+
+- name: Windows hosts — Defender handling
+  hosts: windows-hosts
+  gather_facts: false
+  roles:
+    - ws-defender
+
+- name: Windows hosts — Sysmon and the Wazuh agent
+  hosts: windows-hosts
+  gather_facts: false
+  vars:
+    siem_ip: 10.0.0.3
+    agent_names:
+      ws: WS01
+      dc: DC01
+    sysmon_dir: C:\Installs\Sysmon
+    wazuh_agent_url: https://packages.wazuh.com/4.x/windows/wazuh-agent-4.9.2-1.msi
+  tasks:
+
+    # ------------------------------------------------------------------
+    # Sysmon — endpoint telemetry (process creation, network connections)
+    # ------------------------------------------------------------------
+    - name: Ensure the Sysmon install directory exists
+      ansible.windows.win_file:
+        path: '{{ sysmon_dir }}'
+        state: directory
+
+    - name: Download Sysmon from Sysinternals
+      ansible.windows.win_get_url:
+        url: https://download.sysinternals.com/files/Sysmon.zip
+        dest: '{{ sysmon_dir }}\Sysmon.zip'
+
+    - name: Unzip Sysmon
+      community.windows.win_unzip:
+        src: '{{ sysmon_dir }}\Sysmon.zip'
+        dest: '{{ sysmon_dir }}'
+
+    - name: Download the SwiftOnSecurity Sysmon configuration
+      ansible.windows.win_get_url:
+        url: https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/master/sysmonconfig-export.xml
+        dest: '{{ sysmon_dir }}\sysmonconfig.xml'
+
+    - name: Install Sysmon with that configuration
+      ansible.windows.win_command:
+        cmd: '{{ sysmon_dir }}\Sysmon64.exe -accepteula -i {{ sysmon_dir }}\sysmonconfig.xml'
+      args:
+        creates: C:\Windows\Sysmon64.exe
+      register: sysmon_install
+      failed_when: false
+
+    - name: Report the Sysmon install result
+      ansible.builtin.debug:
+        msg: "SYSMON INSTALL rc={{ sysmon_install.rc | default('n/a') }} :: {{ sysmon_install.stdout_lines | default([]) }}"
+
+    - name: Confirm the Sysmon service is running
+      ansible.windows.win_service:
+        name: Sysmon64
+        state: started
+        start_mode: auto
+
+    # ------------------------------------------------------------------
+    # Wazuh agent — ships Windows and Sysmon events to the manager
+    # ------------------------------------------------------------------
+    - name: Download the Wazuh agent installer
+      ansible.windows.win_get_url:
+        url: '{{ wazuh_agent_url }}'
+        dest: C:\Installs\wazuh-agent.msi
+
+    - name: Install and enrol the Wazuh agent
+      ansible.windows.win_package:
+        path: C:\Installs\wazuh-agent.msi
+        arguments: /q WAZUH_MANAGER="{{ siem_ip }}" WAZUH_AGENT_NAME="{{ agent_names[inventory_hostname] }}" WAZUH_REGISTRATION_SERVER="{{ siem_ip }}"
+        state: present
+
+    - name: Add the Sysmon channel to the agent configuration
+      community.windows.win_lineinfile:
+        path: C:\Program Files (x86)\ossec-agent\ossec.conf
+        insertbefore: '</ossec_config>'
+        line: |
+          <localfile>
+            <location>Microsoft-Windows-Sysmon/Operational</location>
+            <log_format>eventchannel</log_format>
+          </localfile>
+
+    - name: Restart the Wazuh agent so it picks up the Sysmon channel
+      ansible.windows.win_service:
+        name: WazuhSvc
+        state: restarted
+        start_mode: auto
+
+    - name: Give the agent a moment to enrol
+      ansible.builtin.pause:
+        seconds: 30
+
+- name: Workstation — stage the B1 artefact
+  hosts: windows-members
+  gather_facts: false
+  roles:
+    - ws-artifacts
+
+- name: Workstation — stage the C1 credential access
+  hosts: windows-members
+  gather_facts: false
+  roles:
+    - ws-credaccess
+
+- name: Workstation — stage the C2 lateral movement
+  hosts: windows-members
+  gather_facts: false
+  roles:
+    - ws-lateral
+
+- name: Confirm the agent enrolled
+  hosts: linux-hosts
+  become: true
+  gather_facts: false
+  tasks:
+    - name: List enrolled agents
+      ansible.builtin.command:
+        cmd: /var/ossec/bin/agent_control -l
+      register: agent_list
+      changed_when: false
+      failed_when: false
+      retries: 10
+      delay: 15
+      until: "'WS01' in agent_list.stdout and 'DC01' in agent_list.stdout"
+
+    - name: Show enrolled agents
+      ansible.builtin.debug:
+        msg: "AGENTS: {{ agent_list.stdout_lines }}"
