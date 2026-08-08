@@ -357,6 +357,12 @@
       ansible.builtin.include_role:
         name: siem-rules
 
+- name: Windows hosts — Defender handling
+  hosts: windows-hosts
+  gather_facts: false
+  roles:
+    - ws-defender
+
 - name: Windows hosts — Sysmon and the Wazuh agent
   hosts: windows-hosts
   gather_facts: false
@@ -449,6 +455,12 @@
   gather_facts: false
   roles:
     - ws-artifacts
+
+- name: Workstation — stage the C2 lateral movement
+  hosts: windows-members
+  gather_facts: false
+  roles:
+    - ws-lateral
 
 - name: Confirm the agent enrolled
   hosts: linux-hosts
