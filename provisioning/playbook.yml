@@ -41,6 +41,20 @@
       user_access_rdp: true
       user_access_admin: true
 
+- name: Workstation — set the computer name to WS01
+  hosts: windows-members
+  gather_facts: false
+  tasks:
+    - name: Set the computer name to WS01
+      ansible.windows.win_hostname:
+        name: WS01
+      register: ws_rename
+
+    - name: Reboot if the computer was renamed
+      ansible.windows.win_reboot:
+        reboot_timeout: 900
+      when: ws_rename.reboot_required
+
 - name: Domain controller — promote dc to a domain controller
   hosts: domain-controllers
   gather_facts: false
@@ -178,6 +192,42 @@
         host: 0.0.0.0
         timeout: 300
 
+    - name: Cap the indexer JVM heap so the stack fits in 8 GB
+      ansible.builtin.replace:
+        path: /etc/wazuh-indexer/jvm.options
+        regexp: '^-X{{ item }}\\d+[gm]'
+        replace: '-X{{ item }}3g'
+      loop:
+        - ms
+        - mx
+      register: heap_capped
+
+    - name: Restart the indexer if the heap changed
+      ansible.builtin.systemd:
+        name: wazuh-indexer
+        state: restarted
+      when: heap_capped is changed
+
+    - name: Wait for the dashboard again after the indexer restart
+      ansible.builtin.uri:
+        url: https://localhost:443
+        validate_certs: false
+        status_code: [200, 302, 401]
+      register: dashboard_back
+      retries: 30
+      delay: 20
+      until: dashboard_back is succeeded
+      when: heap_capped is changed
+
+    - name: Report memory headroom
+      ansible.builtin.command: free -m
+      register: mem_free
+      changed_when: false
+
+    - name: Show memory headroom
+      ansible.builtin.debug:
+        msg: "MEMORY: {{ mem_free.stdout_lines }}"
+
     - name: Report service states
       ansible.builtin.command:
         cmd: systemctl is-active wazuh-manager wazuh-indexer wazuh-dashboard
@@ -189,11 +239,14 @@
       ansible.builtin.debug:
         msg: "WAZUH SERVICES: {{ wazuh_services.stdout_lines }}"
 
-- name: Workstation — Sysmon and the Wazuh agent
+- name: Windows hosts — Sysmon and the Wazuh agent
   hosts: windows-hosts
   gather_facts: false
   vars:
     siem_ip: 10.0.0.3
+    agent_names:
+      ws: WS01
+      dc: DC01
     sysmon_dir: C:\Installs\Sysmon
     wazuh_agent_url: https://packages.wazuh.com/4.x/windows/wazuh-agent-4.9.2-1.msi
   tasks:
@@ -250,7 +303,7 @@
     - name: Install and enrol the Wazuh agent
       ansible.windows.win_package:
         path: C:\Installs\wazuh-agent.msi
-        arguments: /q WAZUH_MANAGER="{{ siem_ip }}" WAZUH_AGENT_NAME="WS01" WAZUH_REGISTRATION_SERVER="{{ siem_ip }}"
+        arguments: /q WAZUH_MANAGER="{{ siem_ip }}" WAZUH_AGENT_NAME="{{ agent_names[inventory_hostname] }}" WAZUH_REGISTRATION_SERVER="{{ siem_ip }}"
         state: present
 
     - name: Add the Sysmon channel to the agent configuration
@@ -274,7 +327,7 @@
         seconds: 30
 
 - name: Workstation — stage the B1 artefact
-  hosts: windows-hosts
+  hosts: windows-members
   gather_facts: false
   roles:
     - ws-artifacts
@@ -292,7 +345,7 @@
       failed_when: false
       retries: 10
       delay: 15
-      until: "'WS01' in agent_list.stdout"
+      until: "'WS01' in agent_list.stdout and 'DC01' in agent_list.stdout"
 
     - name: Show enrolled agents
       ansible.builtin.debug:
