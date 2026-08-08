@@ -1,4 +1,4 @@
-name: cr11-b1
+name: cr11
 hosts:
   - name: siem
     flavor: c4_r16_d80
@@ -6,6 +6,12 @@ hosts:
       image: ubuntu-noble-x86_64
       mgmt_user: ubuntu
       mgmt_protocol: ssh
+    hidden: false
+  - name: dc
+    flavor: c4_r5_d120
+    base_box:
+      image: windows-server-2025-x86_64
+      mgmt_user: windows
     hidden: false
   - name: ws
     flavor: c4_r5_d50
@@ -36,6 +42,9 @@ net_mappings:
   - host: ws
     network: corp
     ip: 10.0.0.4
+  - host: dc
+    network: corp
+    ip: 10.0.0.5
 router_mappings:
   - router: r-corp
     network: corp
@@ -45,5 +54,12 @@ groups:
     nodes:
       - siem
   - name: windows-hosts
+    nodes:
+      - ws
+      - dc
+  - name: domain-controllers
+    nodes:
+      - dc
+  - name: windows-members
     nodes:
       - ws
