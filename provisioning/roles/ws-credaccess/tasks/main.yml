@@ -3,6 +3,11 @@
 # genuinely present in LSASS memory. Trainees can inspect the service to work
 # out why svc-backup was available to steal.
 
+- name: Create the backup agent directory
+  ansible.windows.win_file:
+    path: C:\Program Files\BackupAgent
+    state: directory
+
 - name: Create a placeholder backup service binary
   ansible.windows.win_copy:
     src: C:\Windows\System32\cmd.exe
