@@ -220,6 +220,15 @@
       ansible.builtin.debug:
         msg: "WS01 EGRESS: {{ 'OK' if ws_egress is succeeded else 'BLOCKED' }}"
 
+    # The domain join removes localadmin's implicit RDP right, so grant it
+    # explicitly — trainees reach WS01 through Open GUI and nothing else.
+    - name: Ensure localadmin can sign in over RDP after the domain join
+      ansible.windows.win_group_membership:
+        name: Remote Desktop Users
+        members:
+          - localadmin
+        state: present
+
 - name: SIEM — trainee access and Wazuh all-in-one
   hosts: linux-hosts
   become: true
@@ -342,6 +351,11 @@
     - name: Show service states
       ansible.builtin.debug:
         msg: "WAZUH SERVICES: {{ wazuh_services.stdout_lines }}"
+
+  post_tasks:
+    - name: Install the CR-11 detection rules
+      ansible.builtin.include_role:
+        name: siem-rules
 
 - name: Windows hosts — Sysmon and the Wazuh agent
   hosts: windows-hosts
