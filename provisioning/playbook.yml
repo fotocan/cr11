@@ -1,6 +1,23 @@
 ---
-# CADMUS-CR-11 — step 2
-# Wazuh all-in-one on the SIEM, Sysmon + Wazuh agent on the workstation.
+# CADMUS-CR-11
+# siem: Wazuh all-in-one.  dc: Active Directory.  ws: compromised endpoint.
+
+- name: Pre-flight — is the microsoft.ad collection available?
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Look for microsoft.ad
+      ansible.builtin.command:
+        cmd: ansible-galaxy collection list microsoft.ad
+      register: ad_collection
+      changed_when: false
+      failed_when: false
+
+    - name: Report whether microsoft.ad is present
+      ansible.builtin.debug:
+        msg: >-
+          MICROSOFT.AD: {{ 'PRESENT' if ad_collection.rc == 0 else 'MISSING — domain promotion will fail' }}
+          :: {{ ad_collection.stdout_lines | default([]) }}
 
 - name: Wait until WinRM is reachable on every Windows host
   hosts: windows-hosts
@@ -23,6 +40,67 @@
       user_access_password: '{{ local_trainee_password }}'
       user_access_rdp: true
       user_access_admin: true
+
+- name: Domain controller — promote dc to a domain controller
+  hosts: domain-controllers
+  gather_facts: false
+  vars:
+    ad_domain_name: corp.local
+    ad_admin_password: Password123!
+  tasks:
+    - name: Set the computer name to DC01
+      ansible.windows.win_hostname:
+        name: DC01
+      register: dc_rename
+
+    - name: Reboot if the computer was renamed
+      ansible.windows.win_reboot:
+        reboot_timeout: 900
+      when: dc_rename.reboot_required
+
+    - name: Install the AD DS role
+      ansible.windows.win_feature:
+        name: AD-Domain-Services
+        include_management_tools: true
+        state: present
+      register: ad_feature
+
+    - name: Detect whether the host is already a domain controller
+      ansible.windows.win_shell: (Get-CimInstance Win32_ComputerSystem).DomainRole
+      register: dc_role
+      changed_when: false
+
+    - name: Set a password on the built-in Administrator account
+      ansible.windows.win_user:
+        name: Administrator
+        password: '{{ ad_admin_password }}'
+        password_never_expires: true
+        state: present
+      when: (dc_role.stdout | trim | int) < 4
+
+    - name: Promote to domain controller (reboots)
+      microsoft.ad.domain:
+        dns_domain_name: '{{ ad_domain_name }}'
+        safe_mode_password: '{{ ad_admin_password }}'
+        reboot: true
+      when: ad_feature is succeeded
+
+    - name: Wait for AD DS to answer on LDAP after the reboot
+      ansible.windows.win_wait_for:
+        host: 127.0.0.1
+        port: 389
+        delay: 30
+        timeout: 900
+
+    - name: Confirm the domain role
+      ansible.windows.win_shell: >-
+        "$((Get-CimInstance Win32_ComputerSystem).DomainRole) $((Get-CimInstance Win32_ComputerSystem).Domain)"
+      register: dc_final
+      changed_when: false
+
+    - name: Report the domain state
+      ansible.builtin.debug:
+        msg: "DOMAIN: {{ dc_final.stdout | trim }} (role 4 or 5 means domain controller)"
 
 - name: SIEM — trainee access and Wazuh all-in-one
   hosts: linux-hosts
