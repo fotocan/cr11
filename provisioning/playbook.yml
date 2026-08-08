@@ -61,6 +61,8 @@
   vars:
     ad_domain_name: corp.local
     ad_admin_password: Password123!
+    employee_password: Password123!
+    service_password: Password123!
   tasks:
     - name: Set the computer name to DC01
       ansible.windows.win_hostname:
@@ -115,6 +117,108 @@
     - name: Report the domain state
       ansible.builtin.debug:
         msg: "DOMAIN: {{ dc_final.stdout | trim }} (role 4 or 5 means domain controller)"
+
+    # ------------------------------------------------------------------
+    # Scenario accounts.
+    #   j.novak   — the employee who opens the malicious attachment
+    #   svc-backup — the service account the attacker compromises and uses
+    #                for lateral movement (C2) and that E1 must disable
+    # ------------------------------------------------------------------
+    - name: Ensure the Employees OU exists
+      microsoft.ad.ou:
+        name: Employees
+        path: DC=corp,DC=local
+        state: present
+
+    - name: Ensure the ServiceAccounts OU exists
+      microsoft.ad.ou:
+        name: ServiceAccounts
+        path: DC=corp,DC=local
+        state: present
+
+    - name: Create the employee account
+      microsoft.ad.user:
+        name: j.novak
+        sam_account_name: j.novak
+        upn: j.novak@corp.local
+        firstname: Jan
+        surname: Novak
+        path: OU=Employees,DC=corp,DC=local
+        password: '{{ employee_password }}'
+        password_never_expires: true
+        enabled: true
+        state: present
+
+    - name: Create the backup service account
+      microsoft.ad.user:
+        name: svc-backup
+        sam_account_name: svc-backup
+        upn: svc-backup@corp.local
+        description: Nightly backup job — do not disable without change approval
+        path: OU=ServiceAccounts,DC=corp,DC=local
+        password: '{{ service_password }}'
+        password_never_expires: true
+        enabled: true
+        state: present
+        groups:
+          add:
+            - Backup Operators
+
+    - name: List the scenario accounts
+      ansible.windows.win_shell: >-
+        Get-ADUser -Filter * -Properties Enabled |
+        Select-Object SamAccountName,Enabled |
+        Format-Table -AutoSize | Out-String
+      register: ad_users
+      changed_when: false
+
+    - name: Report the scenario accounts
+      ansible.builtin.debug:
+        msg: "AD USERS: {{ ad_users.stdout_lines | select | list }}"
+
+- name: Workstation — join WS01 to the domain
+  hosts: windows-members
+  gather_facts: false
+  vars:
+    ad_domain_name: corp.local
+    ad_dc_ip: 10.0.0.5
+    ad_admin_password: Password123!
+  tasks:
+    - name: Point DNS at the domain controller
+      ansible.windows.win_dns_client:
+        adapter_names: '*'
+        dns_servers:
+          - '{{ ad_dc_ip }}'
+          - 1.1.1.1
+
+    - name: Join the host to the domain (reboots)
+      microsoft.ad.membership:
+        dns_domain_name: '{{ ad_domain_name }}'
+        domain_admin_user: Administrator@{{ ad_domain_name }}
+        domain_admin_password: '{{ ad_admin_password }}'
+        state: domain
+        reboot: true
+
+    - name: Confirm domain membership
+      ansible.windows.win_shell: >-
+        "$((Get-CimInstance Win32_ComputerSystem).PartOfDomain) $((Get-CimInstance Win32_ComputerSystem).Domain)"
+      register: ws_domain
+      changed_when: false
+
+    - name: Report domain membership
+      ansible.builtin.debug:
+        msg: "WS01 DOMAIN: {{ ws_domain.stdout | trim }}"
+
+    - name: Confirm the host can still reach the internet after the DNS change
+      ansible.windows.win_uri:
+        url: http://www.msftconnecttest.com/connecttest.txt
+        method: HEAD
+      register: ws_egress
+      ignore_errors: true
+
+    - name: Report egress after the DNS change
+      ansible.builtin.debug:
+        msg: "WS01 EGRESS: {{ 'OK' if ws_egress is succeeded else 'BLOCKED' }}"
 
 - name: SIEM — trainee access and Wazuh all-in-one
   hosts: linux-hosts
