@@ -1,0 +1,38 @@
+---
+# Defender handling.
+#
+# Tamper Protection is enabled on the windows-11 image, so real-time
+# protection cannot be disabled programmatically — do not try. Path
+# exclusions are usually still modifiable by a local administrator on an
+# unmanaged device, and they are all we need: the staged payload is a benign
+# marker file Defender has no reason to flag, but C1's credential-access
+# activity is behaviour Defender does detect.
+#
+# The exclusions are scenario material too. E1 asks trainees to notice that a
+# scan comes back clean because the payload's location is excluded, remove
+# the exclusion, and scan again.
+
+- name: Add scenario paths to the Defender exclusion list
+  ansible.windows.win_shell: Add-MpPreference -ExclusionPath '{{ item }}'
+  loop:
+    - 'C:\Installs'
+    - 'C:\Program Files\Microsoft Office'
+    - 'C:\Users\localadmin\AppData\Roaming\Microsoft'
+    - 'C:\Staging'
+  changed_when: false
+  failed_when: false
+
+- name: Read back the Defender state
+  ansible.windows.win_shell: >-
+    "$s = Get-MpComputerStatus;
+     $e = (Get-MpPreference).ExclusionPath -join ';';
+     'RealTime=' + $s.RealTimeProtectionEnabled +
+     ' Tamper=' + $s.IsTamperProtected +
+     ' Exclusions=[' + $e + ']'"
+  register: defender_state
+  changed_when: false
+  failed_when: false
+
+- name: Report the Defender state
+  ansible.builtin.debug:
+    msg: "DEFENDER on {{ inventory_hostname }}: {{ defender_state.stdout | default('unreadable') | trim }}"
