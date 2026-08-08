@@ -1,0 +1,37 @@
+---
+- name: Register a scheduled task that performs the lateral movement
+  community.windows.win_scheduled_task:
+    name: BackupJobConnector
+    description: Staged C2 artefact
+    actions:
+      - path: C:\Windows\System32\cmd.exe
+        arguments: >-
+          /c net use \\{{ lateral_target }}\C$
+          /user:{{ lateral_domain }}\{{ lateral_user }} {{ lateral_password }}
+          && dir \\{{ lateral_target }}\C$\Windows\NTDS
+          && net use \\{{ lateral_target }}\C$ /delete
+    triggers:
+      - type: registration
+    username: SYSTEM
+    run_level: highest
+    state: present
+    enabled: true
+
+- name: Give the task time to run and the events time to reach the manager
+  ansible.builtin.pause:
+    seconds: 30
+
+- name: Remove the scheduled task
+  community.windows.win_scheduled_task:
+    name: BackupJobConnector
+    state: absent
+
+- name: Confirm no session is left open
+  ansible.windows.win_shell: net use
+  register: open_sessions
+  changed_when: false
+  failed_when: false
+
+- name: Report remaining sessions
+  ansible.builtin.debug:
+    msg: "NET USE after C2: {{ open_sessions.stdout_lines | select | list }}"
