@@ -1,9 +1,0 @@
----
-# C2 — lateral movement from WS01 to DC01 using the compromised service
-# account. This is a real authentication, not a staged log line: it produces
-# a genuine 4624 logon type 3 on DC01 with svc-backup as targetUserName and
-# 10.0.0.4 as the source address.
-lateral_domain: CORP
-lateral_user: svc-backup
-lateral_password: Password123!
-lateral_target: DC01
