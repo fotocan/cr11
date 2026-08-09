@@ -1,0 +1,133 @@
+---
+# A benign service that runs as svc-backup, so the account's credentials are
+# genuinely present in LSASS memory. Trainees can inspect the service to work
+# out why svc-backup was available to steal.
+
+- name: Create the staging directory
+  ansible.windows.win_file:
+    path: C:\Staging
+    state: directory
+
+- name: Create the backup agent directory
+  ansible.windows.win_file:
+    path: C:\Program Files\BackupAgent
+    state: directory
+
+- name: Create a placeholder backup service binary
+  ansible.windows.win_copy:
+    src: C:\Windows\System32\cmd.exe
+    dest: C:\Program Files\BackupAgent\BackupAgentSvc.exe
+    remote_src: true
+
+- name: Register the backup service running as the service account
+  ansible.windows.win_service:
+    name: '{{ cred_service_name }}'
+    display_name: Enterprise Backup Agent
+    description: Nightly backup agent. Runs as CORP\svc-backup.
+    path: C:\Program Files\BackupAgent\BackupAgentSvc.exe
+    username: '{{ cred_service_account }}'
+    password: '{{ cred_service_password }}'
+    start_mode: auto
+    state: stopped
+  register: backup_service
+  failed_when: false
+
+- name: Read back the service log-on account
+  ansible.windows.win_shell: >-
+    (Get-CimInstance Win32_Service -Filter "Name='{{ cred_service_name }}'").StartName
+  register: service_account
+  changed_when: false
+  failed_when: false
+
+- name: Report the service registration
+  ansible.builtin.debug:
+    msg: "BACKUP SERVICE runs as: {{ service_account.stdout | default('NOT CREATED') | trim }}"
+
+# ------------------------------------------------------------------
+# The credential access itself.
+#
+# We do not dump LSASS. We only open a handle to it with the access mask a
+# credential dumper requests — PROCESS_QUERY_INFORMATION | PROCESS_VM_READ
+# (0x1410). Sysmon records that as Event ID 10 with GrantedAccess 0x1410,
+# which is the forensic signature trainees are taught to look for. No memory
+# is read, nothing is written to disk, and Defender has no behaviour to block.
+# ------------------------------------------------------------------
+
+- name: Write the handle-open tool
+  ansible.windows.win_copy:
+    dest: C:\Staging\dbghelp.ps1
+    content: |
+      $sig = @'
+      using System;
+      using System.Runtime.InteropServices;
+      public class NativeAccess {
+        [DllImport("kernel32.dll", SetLastError=true)]
+        public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+        [DllImport("kernel32.dll", SetLastError=true)]
+        public static extern bool CloseHandle(IntPtr handle);
+      }
+      '@
+      Add-Type -TypeDefinition $sig
+      $lsass = Get-Process lsass
+      # 0x0400 PROCESS_QUERY_INFORMATION | 0x0010 PROCESS_VM_READ
+      $handle = [NativeAccess]::OpenProcess(0x1410, $false, $lsass.Id)
+      if ($handle -ne [IntPtr]::Zero) {
+        Start-Sleep -Seconds 2
+        [void][NativeAccess]::CloseHandle($handle)
+        "opened handle to lsass pid $($lsass.Id)"
+      } else {
+        "failed to open handle: $([ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error()).Message)"
+      }
+
+- name: Register a scheduled task that opens a handle to LSASS
+  community.windows.win_scheduled_task:
+    name: DiagnosticsCollector
+    description: Staged C1 artefact
+    actions:
+      # Task Scheduler launches the binary directly — it does not run a
+      # shell, so redirection has to go through cmd.exe or it is passed to
+      # PowerShell as arguments and silently ignored.
+      - path: C:\Windows\System32\cmd.exe
+        arguments: >-
+          /c C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe
+          -nop -w hidden -ExecutionPolicy Bypass
+          -File C:\Staging\dbghelp.ps1 > C:\Staging\c1.log 2>&1
+    triggers:
+      - type: registration
+    username: SYSTEM
+    run_level: highest
+    state: present
+    enabled: true
+
+- name: Give the task time to run
+  ansible.builtin.pause:
+    seconds: 45
+
+- name: Remove the scheduled task
+  community.windows.win_scheduled_task:
+    name: DiagnosticsCollector
+    state: absent
+
+- name: Read what the credential access attempt reported
+  ansible.windows.win_shell: Get-Content C:\Staging\c1.log
+  register: c1_log
+  changed_when: false
+  failed_when: false
+
+- name: Report the credential access result
+  ansible.builtin.debug:
+    msg: "C1 RESULT: {{ c1_log.stdout | default('no log') | trim }}"
+
+- name: Confirm Sysmon recorded the LSASS access
+  ansible.windows.win_shell: >-
+    Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational'; Id=10}
+    -MaxEvents 5 -ErrorAction SilentlyContinue |
+    Where-Object { $_.Message -match 'lsass' } |
+    Select-Object -First 1 -ExpandProperty Message
+  register: lsass_event
+  changed_when: false
+  failed_when: false
+
+- name: Report the LSASS access event
+  ansible.builtin.debug:
+    msg: "C1 SYSMON EID10: {{ (lsass_event.stdout_lines | default(['none found']))[:12] }}"
