@@ -1,0 +1,123 @@
+<Sysmon schemaversion="4.90">
+  <!--
+    CADMUS-CR-11 Sysmon configuration.
+
+    Purpose-built for this course rather than adapted from a production
+    config. Production configs (SwiftOnSecurity's among them) are tuned to
+    suppress noise, which repeatedly suppresses exactly the events the
+    scenario depends on — its ProcessAccess section is an empty include rule,
+    meaning no Event ID 10 is ever logged, and its DnsQuery filtering would
+    do the same to D1.
+
+    Sysmon evaluates the FIRST matching section per event type, so there must
+    be exactly one section for each. Keep it that way.
+
+    Event IDs used by the course:
+      1  ProcessCreate   — B1, B2, C1, C2
+      3  NetworkConnect  — B1, D1
+      10 ProcessAccess   — C1 (LSASS)
+      11 FileCreate      — B3, persistence
+      12/13 Registry     — persistence (Run keys)
+      22 DnsQuery        — D1, D2
+  -->
+  <HashAlgorithms>SHA256,MD5,IMPHASH</HashAlgorithms>
+  <CheckRevocation>False</CheckRevocation>
+
+  <EventFiltering>
+
+    <!-- 1: process creation. Log everything; volume is manageable in a lab
+         and the whole course rests on process lineage. -->
+    <ProcessCreate onmatch="exclude" />
+
+    <!-- 2: file creation time changed. Not used. -->
+    <FileCreateTime onmatch="include" />
+
+    <!-- 3: network connections. Exclude the SIEM agent's own traffic to the
+         manager, which would otherwise dominate. -->
+    <NetworkConnect onmatch="exclude">
+      <Image condition="end with">wazuh-agent.exe</Image>
+      <DestinationPort condition="is">1514</DestinationPort>
+      <DestinationPort condition="is">1515</DestinationPort>
+    </NetworkConnect>
+
+    <!-- 5: process terminated. Useful for timeline work in C3. -->
+    <ProcessTerminate onmatch="exclude" />
+
+    <!-- 7: image loaded. Very high volume, not used by any level. -->
+    <ImageLoad onmatch="include" />
+
+    <!-- 8: remote thread created. Low volume, classic injection signal. -->
+    <CreateRemoteThread onmatch="exclude" />
+
+    <!-- 10: process access. Restricted to LSASS, which is the only target
+         the course cares about, and the only way to keep the volume sane.
+         Benign accessors are NOT excluded: distinguishing wmiprvse.exe with
+         GrantedAccess 0x1400 from a dumper with 0x1410 is the analytical
+         work in C1. -->
+    <ProcessAccess onmatch="include">
+      <TargetImage condition="image">lsass.exe</TargetImage>
+    </ProcessAccess>
+
+    <!-- 11: file creation. Exclude the noisiest system paths but keep user
+         profile and Program Files writes, which is where dropped payloads
+         land. -->
+    <FileCreate onmatch="exclude">
+      <TargetFilename condition="contains">\Windows\Prefetch\</TargetFilename>
+      <TargetFilename condition="contains">\Windows\SoftwareDistribution\</TargetFilename>
+      <TargetFilename condition="contains">\Windows\WinSxS\</TargetFilename>
+      <TargetFilename condition="contains">\Windows\Servicing\</TargetFilename>
+      <TargetFilename condition="contains">\Windows\Temp\</TargetFilename>
+      <TargetFilename condition="contains">\INetCache\</TargetFilename>
+      <TargetFilename condition="contains">\Microsoft\Edge\</TargetFilename>
+      <TargetFilename condition="end with">.log</TargetFilename>
+      <TargetFilename condition="end with">.etl</TargetFilename>
+      <TargetFilename condition="end with">.tmp</TargetFilename>
+    </FileCreate>
+
+    <!-- 12/13/14: registry. Scoped to autostart locations, which is what
+         persistence levels need. -->
+    <RegistryEvent onmatch="include">
+      <TargetObject condition="contains">\CurrentVersion\Run</TargetObject>
+      <TargetObject condition="contains">\CurrentVersion\RunOnce</TargetObject>
+      <TargetObject condition="contains">\Windows\CurrentVersion\Winlogon\</TargetObject>
+      <TargetObject condition="contains">\CurrentControlSet\Services\</TargetObject>
+      <TargetObject condition="contains">\Control\Lsa\</TargetObject>
+    </RegistryEvent>
+
+    <!-- 15: alternate data streams on downloaded files. -->
+    <FileCreateStreamHash onmatch="include">
+      <TargetFilename condition="contains">Downloads</TargetFilename>
+    </FileCreateStreamHash>
+
+    <!-- 17/18: named pipes. Lateral movement tooling signal. -->
+    <PipeEvent onmatch="exclude">
+      <PipeName condition="contains">\Winsock2\</PipeName>
+      <PipeName condition="contains">\wkssvc</PipeName>
+    </PipeEvent>
+
+    <!-- 22: DNS queries. Needed for D1 and D2's beaconing analysis.
+         Exclude the resolution chatter Windows generates by itself. -->
+    <DnsQuery onmatch="exclude">
+      <QueryName condition="end with">.arpa</QueryName>
+      <QueryName condition="end with">.corp.local</QueryName>
+      <QueryName condition="end with">.msftconnecttest.com</QueryName>
+      <QueryName condition="end with">.microsoft.com</QueryName>
+      <QueryName condition="end with">.windowsupdate.com</QueryName>
+      <QueryName condition="end with">.windows.com</QueryName>
+      <QueryName condition="end with">.msftncsi.com</QueryName>
+      <QueryName condition="end with">.bing.com</QueryName>
+      <QueryName condition="is">WS01</QueryName>
+      <QueryName condition="is">DC01</QueryName>
+    </DnsQuery>
+
+    <!-- 23/26: file deletion. Useful evidence of cleanup. -->
+    <FileDelete onmatch="include">
+      <TargetFilename condition="contains">\AppData\Roaming\</TargetFilename>
+      <TargetFilename condition="contains">\Staging\</TargetFilename>
+    </FileDelete>
+
+    <!-- 25: process tampering (hollowing / herpaderping). -->
+    <ProcessTampering onmatch="exclude" />
+
+  </EventFiltering>
+</Sysmon>
