@@ -1,0 +1,65 @@
+name: cr11
+hosts:
+  - name: siem
+    flavor: c4_r8_d80
+    base_box:
+      image: ubuntu-noble-x86_64
+      mgmt_user: ubuntu
+      mgmt_protocol: ssh
+    hidden: false
+  - name: dc
+    flavor: c4_r5_d120
+    base_box:
+      image: windows-server-2025-x86_64
+      mgmt_user: windows
+    hidden: false
+  - name: ws
+    flavor: c4_r5_d50
+    base_box:
+      image: windows-11-x86_64
+      mgmt_user: windows
+    hidden: false
+routers:
+  - name: r-corp
+    flavor: c1_r2_d10
+    base_box:
+      image: ubuntu-noble-x86_64
+      mgmt_user: ubuntu
+      mgmt_protocol: ssh
+    hidden: false
+networks:
+  - name: corp
+    cidr: 10.0.0.0/24
+    accessible_by_user: true
+    hidden: false
+wan:
+  name: internet-connection
+  cidr: 100.100.100.0/24
+net_mappings:
+  - host: siem
+    network: corp
+    ip: 10.0.0.3
+  - host: ws
+    network: corp
+    ip: 10.0.0.4
+  - host: dc
+    network: corp
+    ip: 10.0.0.5
+router_mappings:
+  - router: r-corp
+    network: corp
+    ip: 10.0.0.1
+groups:
+  - name: linux-hosts
+    nodes:
+      - siem
+  - name: windows-hosts
+    nodes:
+      - ws
+      - dc
+  - name: domain-controllers
+    nodes:
+      - dc
+  - name: windows-members
+    nodes:
+      - ws
