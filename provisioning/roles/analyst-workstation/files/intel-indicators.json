@@ -1,0 +1,43 @@
+{
+  "feed": "Internal Threat Intelligence — indicator export",
+  "generated": "2026-07-28",
+  "source": "Sector CERT advisory distribution",
+  "indicators": [
+    {
+      "type": "sha256",
+      "value": "6155b81b19778fe41de39886e0d0b9daa0009928058b7a6e6aed7e7b708fe084",
+      "malware_family": "CDMS Loader",
+      "confidence": "medium",
+      "first_seen": "2026-06-14",
+      "note": "Second-stage downloader. Hash varies between campaigns; string markers are more reliable."
+    },
+    {
+      "type": "string_marker",
+      "value": "CDMS-",
+      "malware_family": "CDMS Loader",
+      "confidence": "high",
+      "note": "Campaign identifier embedded in every observed sample. Format CDMS-<8 hex>-STAGE2."
+    },
+    {
+      "type": "domain",
+      "value": "updates-cdn-delivery.corp",
+      "malware_family": "CDMS Loader",
+      "confidence": "high",
+      "note": "Command and control. Queried at fixed intervals; does not resolve."
+    },
+    {
+      "type": "filename",
+      "value": "svchost.exe in a user profile directory",
+      "malware_family": "CDMS Loader",
+      "confidence": "medium",
+      "note": "Masquerades as the Windows service host. The legitimate binary only ever lives in System32."
+    },
+    {
+      "type": "registry",
+      "value": "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\WindowsUpdateHelper",
+      "malware_family": "CDMS Loader",
+      "confidence": "medium",
+      "note": "Autostart persistence."
+    }
+  ]
+}
