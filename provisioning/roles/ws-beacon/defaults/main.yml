@@ -1,0 +1,15 @@
+---
+# D1 and D2 — the C2 beacon.
+#
+# No real command-and-control server exists. The implant is a scheduled task
+# that resolves a sinkhole domain at a fixed interval. The domain is in the
+# .invalid TLD (RFC 2606), so it can never resolve and no traffic ever leaves
+# for a real host — but the DNS query itself is genuine, crosses the router,
+# and is recorded by both Sysmon (event ID 22) and Suricata.
+#
+# The fixed interval is the point: trainees identify beaconing by periodicity,
+# not by the domain looking suspicious.
+beacon_domain: updates-cdn-delivery.invalid
+beacon_interval_minutes: 2
+beacon_task_name: MicrosoftEdgeUpdateTaskMachineCore
+beacon_script: 'C:\Users\Public\Libraries\netmon.ps1'
