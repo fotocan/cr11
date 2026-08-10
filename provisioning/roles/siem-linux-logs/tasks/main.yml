@@ -1,0 +1,64 @@
+---
+- name: Create the staging directory for generated logs
+  ansible.builtin.file:
+    path: /opt/cr11
+    state: directory
+    mode: "0755"
+
+- name: Generate the LNX01 log set
+  ansible.builtin.script: generate_linux_logs.py {{ linux_host }} {{ linux_ip }}
+  args:
+    executable: /usr/bin/python3
+  register: gen_logs
+  changed_when: true
+
+- name: Report what was generated
+  ansible.builtin.debug:
+    msg: "LINUX LOGS: {{ gen_logs.stdout_lines | default([]) }}"
+
+- name: Tell the manager to read the generated logs
+  ansible.builtin.blockinfile:
+    path: /var/ossec/etc/ossec.conf
+    insertbefore: '</ossec_config>'
+    marker: '<!-- {mark} cr11 linux logs -->'
+    block: |
+      <localfile>
+        <log_format>syslog</log_format>
+        <location>/opt/cr11/lnx01-auth.log</location>
+      </localfile>
+      <localfile>
+        <log_format>syslog</log_format>
+        <location>/opt/cr11/lnx01-syslog.log</location>
+      </localfile>
+      <localfile>
+        <log_format>audit</log_format>
+        <location>/opt/cr11/lnx01-audit.log</location>
+      </localfile>
+  register: ossec_localfiles
+
+- name: Restart the manager so it picks the files up
+  ansible.builtin.systemd:
+    name: wazuh-manager
+    state: restarted
+  when: ossec_localfiles is changed
+
+- name: Wait for the manager to come back
+  ansible.builtin.wait_for:
+    port: 1514
+    host: 0.0.0.0
+    timeout: 300
+
+- name: Confirm the logs are being read
+  ansible.builtin.shell: |
+    sleep 20
+    echo "--- line counts"
+    wc -l /opt/cr11/lnx01-*.log
+    echo "--- manager reading them"
+    grep -c "cr11/lnx01" /var/ossec/logs/ossec.log 2>/dev/null || echo 0
+  register: linux_check
+  changed_when: false
+  failed_when: false
+
+- name: Report the ingestion state
+  ansible.builtin.debug:
+    msg: "LINUX INGEST: {{ linux_check.stdout_lines }}"

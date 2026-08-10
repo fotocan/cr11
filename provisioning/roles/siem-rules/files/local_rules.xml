@@ -1,0 +1,156 @@
+<!--
+  CADMUS-CR-11 custom detection rules.
+
+  Wazuh's stock rules classify the B1 artefact as rule 92052
+  ("Windows command prompt started by an abnormal process") at level 4,
+  mapped to T1059.003 — because the planted WINWORD.EXE is a copy of
+  cmd.exe. The scenario is a PowerShell downloader, so these rules raise
+  the severity and correct the technique mapping.
+
+  Rule IDs 100000+ are reserved for local rules.
+-->
+<group name="cadmus,cr11,">
+
+  <rule id="100100" level="12">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.parentImage">WINWORD.EXE</field>
+    <description>Office application spawned a child process on $(win.system.computer)</description>
+    <mitre>
+      <id>T1566.001</id>
+      <id>T1204.002</id>
+    </mitre>
+  </rule>
+
+  <rule id="100101" level="13">
+    <if_sid>100100</if_sid>
+    <field name="win.eventdata.commandLine">-enc</field>
+    <description>Obfuscated PowerShell launched by an Office application on $(win.system.computer)</description>
+    <mitre>
+      <id>T1059.001</id>
+      <id>T1027</id>
+    </mitre>
+  </rule>
+
+  <rule id="100102" level="10">
+    <if_group>sysmon_event1</if_group>
+    <field name="win.eventdata.commandLine">-w hidden</field>
+    <description>PowerShell executed with a hidden window on $(win.system.computer)</description>
+    <mitre>
+      <id>T1564.003</id>
+    </mitre>
+  </rule>
+
+  <rule id="100110" level="12">
+    <if_group>sysmon_event_10</if_group>
+    <field name="win.eventdata.targetImage">lsass.exe</field>
+    <description>Process accessed LSASS memory on $(win.system.computer)</description>
+    <mitre>
+      <id>T1003.001</id>
+    </mitre>
+  </rule>
+
+  <!--
+    Wazuh's stock ruleset does not raise an alert for 4624, so a network
+    logon by the compromised service account is invisible without these.
+    They hang off if_group "windows" rather than a specific stock rule —
+    if_sid 60106 was tried first and never matched on this deployment.
+    The ^...$ anchors stop 4624 also matching 46240 and similar.
+  -->
+  <rule id="100121" level="10">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^4624$</field>
+    <field name="win.eventdata.targetUserName">svc-backup</field>
+    <description>Logon by the backup service account on $(win.system.computer)</description>
+    <mitre>
+      <id>T1078.002</id>
+    </mitre>
+  </rule>
+
+  <rule id="100122" level="12">
+    <if_sid>100121</if_sid>
+    <field name="win.eventdata.logonType">^3$</field>
+    <description>Network logon by the backup service account to $(win.system.computer) from $(win.eventdata.ipAddress)</description>
+    <mitre>
+      <id>T1021.002</id>
+      <id>T1078.002</id>
+    </mitre>
+  </rule>
+
+  <!--
+    100130 and 100140 use if_group "windows" plus an anchored eventID field
+    rather than the Sysmon group names — same pattern as 100121, and verified
+    firing on this deployment. NOTE: saving local_rules.xml in the dashboard
+    editor does NOT restart the manager; it must be restarted manually before
+    any rule change takes effect.
+  -->
+  <rule id="100130" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^11$</field>
+    <field name="win.eventdata.targetFilename">svchost.exe</field>
+    <description>Executable created using the name of a system process on $(win.system.computer)</description>
+    <mitre>
+      <id>T1036.005</id>
+      <id>T1105</id>
+    </mitre>
+  </rule>
+
+  <rule id="100140" level="12">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^13$</field>
+    <field name="win.eventdata.details">AppData</field>
+    <description>Autostart registry value set to an executable in AppData on $(win.system.computer)</description>
+    <mitre>
+      <id>T1547.001</id>
+    </mitre>
+  </rule>
+
+  <!--
+    Wazuh does not alert on Sysmon event ID 22 by default, so beacon DNS
+    queries never reach the dashboard without these. 100150 indexes all DNS
+    queries at a low level so trainees can establish what normal traffic
+    looks like; 100151 raises the beacon domain specifically.
+  -->
+  <rule id="100150" level="8">
+    <if_group>windows</if_group>
+    <field name="win.system.eventID">^22$</field>
+    <description>DNS query for $(win.eventdata.queryName) by $(win.eventdata.image) on $(win.system.computer)</description>
+    <mitre>
+      <id>T1071.004</id>
+    </mitre>
+  </rule>
+
+  <rule id="100151" level="12">
+    <if_sid>100150</if_sid>
+    <field name="win.eventdata.queryName">updates-cdn-delivery</field>
+    <description>Repeated DNS query to a non-resolving external domain from $(win.system.computer)</description>
+    <mitre>
+      <id>T1071.004</id>
+      <id>T1568</id>
+    </mitre>
+  </rule>
+
+  <!--
+    Suricata's DNS records are matched by stock rule 86603 at level 0, which
+    decodes without alerting — so nothing ever reaches the index. Hanging off
+    86603 is what makes network-layer evidence visible. Field names come from
+    wazuh-logtest: dns.rrname, src_ip, dns.rcode.
+  -->
+  <rule id="100160" level="6">
+    <if_sid>86603</if_sid>
+    <description>Suricata: DNS query for $(dns.rrname) from $(src_ip)</description>
+    <mitre>
+      <id>T1071.004</id>
+    </mitre>
+  </rule>
+
+  <rule id="100161" level="12">
+    <if_sid>100160</if_sid>
+    <field name="dns.rrname">updates-cdn-delivery</field>
+    <description>Suricata: network-layer confirmation of beacon traffic from $(src_ip) to $(dns.rrname)</description>
+    <mitre>
+      <id>T1071.004</id>
+      <id>T1568</id>
+    </mitre>
+  </rule>
+
+</group>

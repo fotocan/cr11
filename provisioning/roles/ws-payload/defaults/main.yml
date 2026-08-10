@@ -1,0 +1,22 @@
+---
+# B3 — the dropped second-stage payload, plus persistence.
+#
+# B1's decoded command said the download would land at
+# %APPDATA%\Microsoft\svchost.exe. It never actually downloads (203.0.113.50
+# does not exist), so the file is staged directly. Paths are written under
+# j.novak's profile because the story is that she opened the attachment,
+# even though the scheduled task itself runs as SYSTEM.
+#
+# NOTE: see README — the artefacts run as SYSTEM while the story says
+# j.novak. Deliberate, deferred, revisit across all artefacts at once.
+
+payload_user: j.novak
+payload_dir: 'C:\Users\j.novak\AppData\Roaming\Microsoft'
+payload_file: 'C:\Users\j.novak\AppData\Roaming\Microsoft\svchost.exe'
+
+# B3's answer. Extracted with strings/Select-String from the payload.
+payload_marker: 'CDMS-b7f3a91e-STAGE2'
+
+# Persistence
+run_key_name: WindowsUpdateHelper
+persist_task_name: MicrosoftEdgeUpdateTaskMachineUA
