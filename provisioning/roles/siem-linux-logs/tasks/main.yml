@@ -1,0 +1,88 @@
+---
+# A2 — pre-ingested Linux telemetry.
+#
+# ORDER MATTERS. wazuh-logcollector tracks a read position per monitored file,
+# and when a localfile is added for a file that already exists it begins reading
+# from the END — so anything written beforehand is never ingested. Configure the
+# manager and restart it FIRST, then write the logs. logcollector then sees each
+# file appear and reads it from the beginning.
+
+- name: Create the staging directory for generated logs
+  ansible.builtin.file:
+    path: /opt/cr11
+    state: directory
+    mode: "0755"
+
+- name: Tell the manager to read the generated logs
+  ansible.builtin.blockinfile:
+    path: /var/ossec/etc/ossec.conf
+    insertbefore: '</ossec_config>'
+    marker: '<!-- {mark} cr11 linux logs -->'
+    block: |
+      <localfile>
+        <log_format>syslog</log_format>
+        <location>/opt/cr11/lnx01-auth.log</location>
+      </localfile>
+      <localfile>
+        <log_format>syslog</log_format>
+        <location>/opt/cr11/lnx01-syslog.log</location>
+      </localfile>
+      <localfile>
+        <log_format>syslog</log_format>
+        <location>/opt/cr11/lnx01-audit.log</location>
+      </localfile>
+  register: ossec_localfiles
+
+- name: Restart the manager so it begins watching for those files
+  ansible.builtin.systemd:
+    name: wazuh-manager
+    state: restarted
+  when: ossec_localfiles is changed
+
+- name: Wait for the manager to come back
+  ansible.builtin.wait_for:
+    port: 1514
+    host: 0.0.0.0
+    timeout: 300
+
+# The generator creates the files empty, waits a minute for logcollector to
+# open them at position zero, then appends every file over the same number of
+# rounds, with keep-alive lines so no file falls silent — see the comments in
+# the script. It runs for roughly six minutes, deliberately: the cost is build
+# time, and the failure it prevents is silent.
+- name: Generate the LNX01 log set
+  ansible.builtin.script: generate_linux_logs.py {{ linux_host }} {{ linux_ip }}
+  args:
+    executable: /usr/bin/python3
+  register: gen_logs
+  changed_when: true
+
+- name: Report what was generated
+  ansible.builtin.debug:
+    msg: "LINUX LOGS: {{ gen_logs.stdout_lines | default([]) }}"
+
+- name: Give logcollector time to process the last batch
+  ansible.builtin.pause:
+    seconds: 30
+
+- name: Confirm the events were actually ingested
+  ansible.builtin.shell: |
+    echo "--- localfile blocks actually in ossec.conf"
+    grep -A 3 "cr11/lnx01" /var/ossec/etc/ossec.conf || echo "NO LOCALFILE BLOCKS FOUND"
+    echo "--- files on disk"
+    wc -l /opt/cr11/lnx01-*.log
+    echo "--- logcollector opened them"
+    grep -c "cr11/lnx01" /var/ossec/logs/ossec.log 2>/dev/null || echo 0
+    echo "--- alerts whose predecoder hostname is LNX01 (this is what reaches the index)"
+    grep -c '"hostname":"LNX01"' /var/ossec/logs/alerts/alerts.json 2>/dev/null || echo 0
+    echo "--- by rule"
+    grep '"hostname":"LNX01"' /var/ossec/logs/alerts/alerts.json 2>/dev/null | grep -o '"id":"1001[0-9]*"' | sort | uniq -c
+    echo "--- sample"
+    grep '"hostname":"LNX01"' /var/ossec/logs/alerts/alerts.json 2>/dev/null | head -1 | cut -c1-260
+  register: linux_check
+  changed_when: false
+  failed_when: false
+
+- name: Report the ingestion state
+  ansible.builtin.debug:
+    msg: "LINUX INGEST: {{ linux_check.stdout_lines }}"
