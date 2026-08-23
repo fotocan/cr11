@@ -1,0 +1,15 @@
+---
+# A2 — pre-ingested Linux telemetry.
+#
+# The scenario's Linux server (LNX01, an internal file and backup server) is
+# not a running VM: no level investigates Linux, so a whole node would be
+# spent on data alone. Its logs are generated at provision time and ingested
+# into the SIEM instead, which satisfies objective 2's multi-source
+# requirement without spending the RAM.
+#
+# Timestamps are written relative to build time so the data lands in the same
+# window as the live artefacts. The backup service account appears here doing
+# its ordinary work, which is what makes svc-backup plausible as a target
+# later in the chain.
+linux_host: LNX01
+linux_ip: 10.0.0.20
