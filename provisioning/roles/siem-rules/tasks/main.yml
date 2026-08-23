@@ -1,0 +1,36 @@
+---
+# Custom Wazuh detection rules for the CR-11 scenario.
+
+- name: Install the CR-11 local rules
+  ansible.builtin.copy:
+    src: local_rules.xml
+    dest: /var/ossec/etc/rules/local_rules.xml
+    owner: wazuh
+    group: wazuh
+    mode: "0640"
+  register: local_rules
+
+- name: Restart the manager to load the new rules
+  ansible.builtin.systemd:
+    name: wazuh-manager
+    state: restarted
+  when: local_rules is changed
+
+- name: Wait for the manager to come back
+  ansible.builtin.wait_for:
+    port: 1514
+    host: 0.0.0.0
+    timeout: 300
+
+- name: Verify the analysis engine is running with the new rules
+  ansible.builtin.command:
+    cmd: /var/ossec/bin/wazuh-control status
+  register: rules_test
+  changed_when: false
+  failed_when: false
+
+- name: Report the rule load result
+  ansible.builtin.debug:
+    msg: >-
+      RULES: {{ 'analysisd running' if 'wazuh-analysisd is running' in rules_test.stdout
+      else 'ANALYSISD DOWN — check local_rules.xml' }}
